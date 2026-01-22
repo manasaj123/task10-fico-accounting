@@ -1,0 +1,213 @@
+const db = require('../config/db');
+const { Invoice, Ledger } = db;
+
+// helper: calculate GST/TDS and totals
+const computeInvoiceAmounts = ({ baseAmount, gstRate, tdsRate }) => {
+  const base = Number(baseAmount) || 0;
+  const gstR = Number(gstRate) || 0;
+  const tdsR = Number(tdsRate) || 0;
+
+  const gstAmount = base * gstR / 100;
+  // TDS is on value excluding GST. [web:35][web:38]
+  const tdsAmount = base * tdsR / 100;
+
+  const totalAmount = base + gstAmount - tdsAmount;
+  return { gstAmount, tdsAmount, totalAmount };
+};
+
+const postInvoiceLedger = async (invoice, transaction) => {
+  const {
+    id,
+    type,
+    invoiceNumber,
+    date,
+    baseAmount,
+    gstAmount,
+    tdsAmount,
+    totalAmount,
+    costCenterId,
+    profitCenterId
+  } = invoice;
+
+  const base = Number(baseAmount);
+  const gst = Number(gstAmount);
+  const tds = Number(tdsAmount);
+  const total = Number(totalAmount);
+
+  // Assume GL codes for demo
+  const AR_ACCOUNT = '300001'; // Accounts Receivable
+  const AP_ACCOUNT = '200001'; // Accounts Payable
+  const REVENUE_ACCOUNT = '400001';
+  const EXPENSE_ACCOUNT = '500001';
+  const GST_OUTPUT = '210001';
+  const GST_INPUT = '110001';
+  const TDS_RECEIVABLE = '310001';
+  const TDS_PAYABLE = '210002';
+
+  const common = {
+    date,
+    referenceType: 'INVOICE',
+    referenceNumber: invoiceNumber,
+    invoiceId: id,
+    costCenterId,
+    profitCenterId
+  };
+
+  if (type === 'AR') {
+    // Customer Invoice:
+    // Debit AR: total
+    // Credit Revenue: base
+    // Credit GST Output: gst
+    // Debit TDS Receivable: tds
+    await Ledger.bulkCreate([
+      {
+        ...common,
+        accountCode: AR_ACCOUNT,
+        description: `Customer invoice ${invoiceNumber}`,
+        debit: total,
+        credit: 0
+      },
+      {
+        ...common,
+        accountCode: REVENUE_ACCOUNT,
+        description: `Revenue for invoice ${invoiceNumber}`,
+        debit: 0,
+        credit: base
+      },
+      gst > 0
+        ? {
+            ...common,
+            accountCode: GST_OUTPUT,
+            description: `GST output for invoice ${invoiceNumber}`,
+            debit: 0,
+            credit: gst
+          }
+        : null,
+      tds > 0
+        ? {
+            ...common,
+            accountCode: TDS_RECEIVABLE,
+            description: `TDS receivable for invoice ${invoiceNumber}`,
+            debit: tds,
+            credit: 0
+          }
+        : null
+    ].filter(Boolean), { transaction });
+  } else {
+    // Vendor Invoice:
+    // Debit Expense: base
+    // Debit GST Input: gst
+    // Credit AP: total
+    // Credit TDS Payable: tds
+    await Ledger.bulkCreate([
+      {
+        ...common,
+        accountCode: EXPENSE_ACCOUNT,
+        description: `Vendor expense for invoice ${invoiceNumber}`,
+        debit: base,
+        credit: 0
+      },
+      gst > 0
+        ? {
+            ...common,
+            accountCode: GST_INPUT,
+            description: `GST input for invoice ${invoiceNumber}`,
+            debit: gst,
+            credit: 0
+          }
+        : null,
+      {
+        ...common,
+        accountCode: AP_ACCOUNT,
+        description: `Vendor invoice ${invoiceNumber}`,
+        debit: 0,
+        credit: total
+      },
+      tds > 0
+        ? {
+            ...common,
+            accountCode: TDS_PAYABLE,
+            description: `TDS payable for invoice ${invoiceNumber}`,
+            debit: 0,
+            credit: tds
+          }
+        : null
+    ].filter(Boolean), { transaction });
+  }
+};
+
+exports.createInvoice = async (req, res, next) => {
+  const t = await db.sequelize.transaction();
+  try {
+    const {
+      invoiceNumber,
+      type,
+      partyName,
+      partyGSTIN,
+      date,
+      dueDate,
+      baseAmount,
+      gstRate,
+      tdsRate,
+      costCenterId,
+      profitCenterId,
+      narration
+    } = req.body;
+
+    const { gstAmount, tdsAmount, totalAmount } = computeInvoiceAmounts({
+      baseAmount,
+      gstRate,
+      tdsRate
+    });
+
+    const invoice = await Invoice.create({
+      invoiceNumber,
+      type,
+      partyName,
+      partyGSTIN,
+      date,
+      dueDate,
+      baseAmount,
+      gstRate,
+      gstAmount,
+      tdsRate,
+      tdsAmount,
+      totalAmount,
+      balanceAmount: totalAmount,
+      status: 'POSTED',
+      createdBy: req.user.id,
+      costCenterId,
+      profitCenterId,
+      narration
+    }, { transaction: t });
+
+    await postInvoiceLedger(invoice, t);
+
+    await t.commit();
+    res.status(201).json(invoice);
+  } catch (err) {
+    await t.rollback();
+    next(err);
+  }
+};
+
+exports.listInvoices = async (req, res, next) => {
+  try {
+    const invoices = await Invoice.findAll({
+      order: [['date', 'DESC'], ['id', 'DESC']]
+    });
+    res.json(invoices);
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.getInvoice = async (req, res, next) => {
+  try {
+    const invoice = await Invoice.findByPk(req.params.id);
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    res.json(invoice);
+  } catch (err) {
+    next(err);
+  }
+};
