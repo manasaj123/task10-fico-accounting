@@ -15,8 +15,15 @@ const Invoice = () => {
     tdsRate: '0',
     narration: ''
   });
+
   const [invoices, setInvoices] = useState([]);
   const [error, setError] = useState('');
+
+  // NEW: popup state
+  const [partyInvoices, setPartyInvoices] = useState([]);
+  const [showPartyModal, setShowPartyModal] = useState(false);
+  const [partyLoading, setPartyLoading] = useState(false);
+  const [partyError, setPartyError] = useState('');
 
   const loadInvoices = async () => {
     const res = await api.get('/invoices');
@@ -36,17 +43,57 @@ const Invoice = () => {
     setError('');
     try {
       const payload = {
-        ...form,
+        // invoiceNumber is not sent; backend generates it
+        type: form.type,
+        partyName: form.partyName,
+        partyGSTIN: form.partyGSTIN,
+        date: form.date,
+        dueDate: form.dueDate,
         baseAmount: Number(form.baseAmount),
         gstRate: Number(form.gstRate),
-        tdsRate: Number(form.tdsRate) || 0
+        tdsRate: Number(form.tdsRate) || 0,
+        narration: form.narration,
       };
-      await api.post('/invoices', payload);
-      setForm((f) => ({ ...f, invoiceNumber: '', partyName: '', partyGSTIN: '', baseAmount: '', narration: '' }));
+      const res = await api.post('/invoices', payload);
+
+      // Set generated invoiceNumber if you want to show it
+      setForm((f) => ({
+        ...f,
+        invoiceNumber: res.data.invoiceNumber || '',
+        partyName: '',
+        partyGSTIN: '',
+        baseAmount: '',
+        narration: '',
+      }));
       loadInvoices();
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to create invoice');
     }
+  };
+
+  // NEW: fetch and open party transactions popup
+  const openPartyTransactions = async () => {
+    if (!form.partyName.trim()) return;
+    setPartyLoading(true);
+    setPartyError('');
+    try {
+      const res = await api.get(
+        `/invoices/party/${encodeURIComponent(form.partyName.trim())}`
+      );
+      setPartyInvoices(res.data);
+      setShowPartyModal(true);
+    } catch (err) {
+      setPartyError(
+        err.response?.data?.message || 'Failed to load party invoices'
+      );
+      setShowPartyModal(true);
+    } finally {
+      setPartyLoading(false);
+    }
+  };
+
+  const closePartyModal = () => {
+    setShowPartyModal(false);
   };
 
   return (
@@ -62,19 +109,37 @@ const Invoice = () => {
               <input
                 name="invoiceNumber"
                 value={form.invoiceNumber}
-                onChange={handleChange}
-                required
+                readOnly
+                placeholder="Will be generated (DB4-INV-001)"
               />
             </div>
+
             <div className="form-group">
-              <label>Type</label>
-              <select name="type" value={form.type} onChange={handleChange}>
+              <label>
+                Type<span className="required-star">*</span>
+              </label>
+              <select
+                name="type"
+                value={form.type}
+                onChange={handleChange}
+                required
+              >
                 <option value="AR">Customer (AR)</option>
                 <option value="AP">Vendor (AP)</option>
               </select>
             </div>
+
             <div className="form-group">
-              <label>Party Name</label>
+              <label>
+                Party Name<span className="required-star">*</span>{' '}
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={openPartyTransactions}
+                >
+                  View transactions
+                </button>
+              </label>
               <input
                 name="partyName"
                 value={form.partyName}
@@ -82,6 +147,7 @@ const Invoice = () => {
                 required
               />
             </div>
+
             <div className="form-group">
               <label>Party GSTIN</label>
               <input
@@ -90,8 +156,11 @@ const Invoice = () => {
                 onChange={handleChange}
               />
             </div>
+
             <div className="form-group">
-              <label>Date</label>
+              <label>
+                Date<span className="required-star">*</span>
+              </label>
               <input
                 type="date"
                 name="date"
@@ -100,8 +169,11 @@ const Invoice = () => {
                 required
               />
             </div>
+
             <div className="form-group">
-              <label>Due Date</label>
+              <label>
+                Deu Date<span className="required-star">*</span>
+              </label>
               <input
                 type="date"
                 name="dueDate"
@@ -109,8 +181,11 @@ const Invoice = () => {
                 onChange={handleChange}
               />
             </div>
+
             <div className="form-group">
-              <label>Base Amount</label>
+              <label>
+                Base Amount<span className="required-star">*</span>
+              </label>
               <input
                 type="number"
                 name="baseAmount"
@@ -119,6 +194,7 @@ const Invoice = () => {
                 required
               />
             </div>
+
             <div className="form-group-inline">
               <div>
                 <label>GST %</label>
@@ -139,6 +215,7 @@ const Invoice = () => {
                 />
               </div>
             </div>
+
             <div className="form-group">
               <label>Narration</label>
               <textarea
@@ -147,11 +224,13 @@ const Invoice = () => {
                 onChange={handleChange}
               />
             </div>
+
             <button className="btn-primary" type="submit">
               Save & Post
             </button>
           </form>
         </div>
+
         <div className="card">
           <h3>Recent Invoices</h3>
           <table className="table">
@@ -187,6 +266,62 @@ const Invoice = () => {
           </table>
         </div>
       </div>
+
+      {/* Party transactions popup */}
+      {showPartyModal && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="modal-header">
+              <h4>Invoices for {form.partyName}</h4>
+              <button type="button" onClick={closePartyModal}>
+                X
+              </button>
+            </div>
+            <div className="modal-body">
+              {partyLoading && <div>Loading...</div>}
+              {partyError && <div className="error-text">{partyError}</div>}
+              {!partyLoading && !partyError && partyInvoices.length === 0 && (
+                <div>No invoices found for this party.</div>
+              )}
+              {!partyLoading && !partyError && partyInvoices.length > 0 && (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>No</th>
+                      <th>Date</th>
+                      <th>Type</th>
+                      <th>Base</th>
+                      <th>Total</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {partyInvoices.map((inv) => (
+                      <tr key={inv.id}>
+                        <td>{inv.invoiceNumber}</td>
+                        <td>{inv.date}</td>
+                        <td>{inv.type}</td>
+                        <td>{Number(inv.baseAmount).toFixed(2)}</td>
+                        <td>{Number(inv.totalAmount).toFixed(2)}</td>
+                        <td>{inv.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={closePartyModal}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

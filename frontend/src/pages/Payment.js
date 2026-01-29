@@ -33,21 +33,77 @@ const Payment = () => {
   }, []);
 
   const handleChange = (e) => {
-    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+    const { name, value } = e.target;
+
+    // When invoice changes, auto-set Type based on invoice.type
+    if (name === 'invoiceId') {
+      const inv = invoices.find((i) => i.id === Number(value));
+
+      if (inv) {
+        const nextType = inv.type === 'AP' ? 'PAYMENT' : 'RECEIPT';
+        setForm((f) => ({
+          ...f,
+          invoiceId: value,
+          type: nextType,
+        }));
+      } else {
+        setForm((f) => ({
+          ...f,
+          invoiceId: '',
+          type: 'RECEIPT',
+        }));
+      }
+      return;
+    }
+
+    setForm((f) => ({ ...f, [name]: value }));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    const selectedInvoice = invoices.find(
+      (inv) => inv.id === Number(form.invoiceId)
+    );
+    const amount = Number(form.amount) || 0;
+
+    if (!selectedInvoice) {
+      setError('Please select an invoice');
+      return;
+    }
+
+    const balance = Number(selectedInvoice.balanceAmount) || 0;
+    if (amount > balance) {
+      setError('Payment exceeds invoice balance');
+      return;
+    }
+
     try {
       const payload = {
-        ...form,
+        // paymentNumber is generated in backend
+        type: form.type,
         invoiceId: Number(form.invoiceId),
-        amount: Number(form.amount),
-        tdsAmount: Number(form.tdsAmount) || 0
+        date: form.date,
+        mode: form.mode,
+        bankAccountCode: form.bankAccountCode,
+        amount,
+        tdsAmount: Number(form.tdsAmount) || 0,
+        referenceNumber: form.referenceNumber,
+        remarks: form.remarks,
       };
-      await api.post('/payments', payload);
-      setForm((f) => ({ ...f, paymentNumber: '', amount: '', tdsAmount: '', referenceNumber: '', remarks: '' }));
+
+      const res = await api.post('/payments', payload);
+
+      setForm((f) => ({
+        ...f,
+        paymentNumber: res.data.paymentNumber || '',
+        invoiceId: '',
+        amount: '',
+        tdsAmount: '',
+        referenceNumber: '',
+        remarks: '',
+      }));
       loadData();
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to create payment');
@@ -62,24 +118,11 @@ const Payment = () => {
           <h3>Record Payment/Receipt</h3>
           {error && <div className="error-text">{error}</div>}
           <form onSubmit={handleSubmit}>
+            {/* Invoice first */}
             <div className="form-group">
-              <label>Payment No.</label>
-              <input
-                name="paymentNumber"
-                value={form.paymentNumber}
-                onChange={handleChange}
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label>Type</label>
-              <select name="type" value={form.type} onChange={handleChange}>
-                <option value="RECEIPT">Receipt (Customer)</option>
-                <option value="PAYMENT">Payment (Vendor)</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Invoice</label>
+              <label>
+                Invoice<span className="required-star">*</span>
+              </label>
               <select
                 name="invoiceId"
                 value={form.invoiceId}
@@ -89,13 +132,41 @@ const Payment = () => {
                 <option value="">Select invoice</option>
                 {invoices.map((inv) => (
                   <option key={inv.id} value={inv.id}>
-                    {inv.invoiceNumber} - {inv.partyName} (Bal: {Number(inv.balanceAmount).toFixed(2)})
+                    {inv.invoiceNumber} - {inv.partyName} (Bal:{' '}
+                    {Number(inv.balanceAmount).toFixed(2)})
                   </option>
                 ))}
               </select>
             </div>
+
+            {/* Auto payment number */}
             <div className="form-group">
-              <label>Date</label>
+              <label>Payment No.</label>
+              <input
+                name="paymentNumber"
+                value={form.paymentNumber}
+                readOnly
+                placeholder="Will be generated from invoice"
+              />
+            </div>
+
+            <div className="form-group">
+              
+              <select
+                name="type"
+                value={form.type}
+                onChange={handleChange}
+                required
+              >
+                <option value="RECEIPT">Receipt (Customer)</option>
+                <option value="PAYMENT">Payment (Vendor)</option>
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label>
+                Date<span className="required-star">*</span>
+              </label>
               <input
                 type="date"
                 name="date"
@@ -104,6 +175,7 @@ const Payment = () => {
                 required
               />
             </div>
+
             <div className="form-group">
               <label>Mode</label>
               <select name="mode" value={form.mode} onChange={handleChange}>
@@ -114,6 +186,7 @@ const Payment = () => {
                 <option value="CARD">Card</option>
               </select>
             </div>
+
             <div className="form-group">
               <label>Bank/ Cash Account Code</label>
               <input
@@ -122,8 +195,11 @@ const Payment = () => {
                 onChange={handleChange}
               />
             </div>
+
             <div className="form-group">
-              <label>Amount</label>
+              <label>
+                Amount<span className="required-star">*</span>
+              </label>
               <input
                 type="number"
                 name="amount"
@@ -132,6 +208,7 @@ const Payment = () => {
                 required
               />
             </div>
+
             <div className="form-group">
               <label>TDS Amount</label>
               <input
@@ -141,6 +218,7 @@ const Payment = () => {
                 onChange={handleChange}
               />
             </div>
+
             <div className="form-group">
               <label>Reference No.</label>
               <input
@@ -149,6 +227,7 @@ const Payment = () => {
                 onChange={handleChange}
               />
             </div>
+
             <div className="form-group">
               <label>Remarks</label>
               <textarea
@@ -157,11 +236,13 @@ const Payment = () => {
                 onChange={handleChange}
               />
             </div>
+
             <button className="btn-primary" type="submit">
               Save Payment
             </button>
           </form>
         </div>
+
         <div className="card">
           <h3>Recent Payments</h3>
           <table className="table">

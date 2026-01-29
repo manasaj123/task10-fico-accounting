@@ -98,11 +98,30 @@ const postPaymentLedger = async (payment, invoice, transaction) => {
   }
 };
 
+// helper: generate payment number, e.g. DB4-PAY-001, DB4-PAY-002 ...
+const generatePaymentNumber = async () => {
+  const last = await Payment.findOne({
+    order: [['id', 'DESC']],
+  });
+
+  let nextSeq = 1;
+  if (last && last.paymentNumber) {
+    const parts = String(last.paymentNumber).split('-');
+    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(lastSeq)) {
+      nextSeq = lastSeq + 1;
+    }
+  }
+
+  const seqStr = String(nextSeq).padStart(3, '0');
+  return `DB4-PAY-${seqStr}`;
+};
+
 exports.createPayment = async (req, res, next) => {
   const t = await db.sequelize.transaction();
   try {
     const {
-      paymentNumber,
+      // paymentNumber,  // ❌ ignore from body
       type,
       invoiceId,
       date,
@@ -131,6 +150,9 @@ exports.createPayment = async (req, res, next) => {
       return res.status(400).json({ message: 'Payment exceeds invoice balance' });
     }
 
+    // auto-generate payment number here
+    const paymentNumber = await generatePaymentNumber();
+
     const payment = await Payment.create({
       paymentNumber,
       type,
@@ -138,10 +160,11 @@ exports.createPayment = async (req, res, next) => {
       date,
       mode,
       bankAccountCode,
-      amount,
+      amount: payAmt,
       tdsAmount: tdsAmount || 0,
       referenceNumber,
-      remarks
+      remarks,
+      reconciled: true,
     }, { transaction: t });
 
     // Update invoice balance & status

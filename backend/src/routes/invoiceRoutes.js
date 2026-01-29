@@ -21,6 +21,13 @@ router.get(
   invoiceController.listInvoices
 );
 
+// NEW: all invoices for a given party name
+router.get(
+  '/party/:partyName',
+  roleMiddleware('ADMIN', 'ACCOUNTANT', 'AUDITOR', 'VIEWER'),
+  invoiceController.listInvoicesByParty
+);
+
 router.get(
   '/:id',
   roleMiddleware('ADMIN', 'ACCOUNTANT', 'AUDITOR', 'VIEWER'),
