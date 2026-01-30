@@ -13,29 +13,50 @@ const Invoice = () => {
     baseAmount: '',
     gstRate: '18',
     tdsRate: '0',
-    narration: ''
+    narration: '',
+    gstAmount: 0,
+    totalAmount: 0
   });
 
-  const [invoices, setInvoices] = useState([]);
+  const [partySummary, setPartySummary] = useState([]);
   const [error, setError] = useState('');
 
-  // NEW: popup state
+  // popup state
   const [partyInvoices, setPartyInvoices] = useState([]);
   const [showPartyModal, setShowPartyModal] = useState(false);
   const [partyLoading, setPartyLoading] = useState(false);
   const [partyError, setPartyError] = useState('');
+  const [selectedParty, setSelectedParty] = useState('');
 
-  const loadInvoices = async () => {
-    const res = await api.get('/invoices');
-    setInvoices(res.data);
+  const loadPartySummary = async () => {
+    const res = await api.get('/invoices/summary/by-party');
+    setPartySummary(res.data);
   };
 
   useEffect(() => {
-    loadInvoices().catch(console.error);
+    loadPartySummary().catch(console.error);
   }, []);
 
   const handleChange = (e) => {
-    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+    const { name, value } = e.target;
+
+    setForm((prev) => {
+      const updated = { ...prev, [name]: value };
+
+      const base = Number(updated.baseAmount) || 0;
+      const gstR = Number(updated.gstRate) || 0;
+      const tdsR = Number(updated.tdsRate) || 0;
+
+      const gstAmount = base * gstR / 100;
+      const tdsAmount = base * tdsR / 100;
+      const totalAmount = base + gstAmount - tdsAmount;
+
+      return {
+        ...updated,
+        gstAmount,
+        totalAmount
+      };
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -52,11 +73,10 @@ const Invoice = () => {
         baseAmount: Number(form.baseAmount),
         gstRate: Number(form.gstRate),
         tdsRate: Number(form.tdsRate) || 0,
-        narration: form.narration,
+        narration: form.narration
       };
       const res = await api.post('/invoices', payload);
 
-      // Set generated invoiceNumber if you want to show it
       setForm((f) => ({
         ...f,
         invoiceNumber: res.data.invoiceNumber || '',
@@ -64,21 +84,24 @@ const Invoice = () => {
         partyGSTIN: '',
         baseAmount: '',
         narration: '',
+        gstAmount: 0,
+        totalAmount: 0
       }));
-      loadInvoices();
+      loadPartySummary();
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to create invoice');
     }
   };
 
-  // NEW: fetch and open party transactions popup
-  const openPartyTransactions = async () => {
-    if (!form.partyName.trim()) return;
+  // fetch and open party transactions popup (from summary row)
+  const openPartyTransactionsFor = async (partyName) => {
+    if (!partyName) return;
+    setSelectedParty(partyName);
     setPartyLoading(true);
     setPartyError('');
     try {
       const res = await api.get(
-        `/invoices/party/${encodeURIComponent(form.partyName.trim())}`
+        `/invoices/party/${encodeURIComponent(partyName)}`
       );
       setPartyInvoices(res.data);
       setShowPartyModal(true);
@@ -95,6 +118,16 @@ const Invoice = () => {
   const closePartyModal = () => {
     setShowPartyModal(false);
   };
+
+  // totals for popup
+  const totalBase = partyInvoices.reduce(
+    (sum, inv) => sum + Number(inv.baseAmount || 0),
+    0
+  );
+  const totalTotal = partyInvoices.reduce(
+    (sum, inv) => sum + Number(inv.totalAmount || 0),
+    0
+  );
 
   return (
     <div>
@@ -131,14 +164,7 @@ const Invoice = () => {
 
             <div className="form-group">
               <label>
-                Party Name<span className="required-star">*</span>{' '}
-                <button
-                  type="button"
-                  className="link-button"
-                  onClick={openPartyTransactions}
-                >
-                  View transactions
-                </button>
+                Party Name<span className="required-star">*</span>
               </label>
               <input
                 name="partyName"
@@ -149,7 +175,9 @@ const Invoice = () => {
             </div>
 
             <div className="form-group">
-              <label>Party GSTIN</label>
+              <label>
+                Party GSTIN <span className="required-star">*</span>
+              </label>
               <input
                 name="partyGSTIN"
                 value={form.partyGSTIN}
@@ -216,6 +244,25 @@ const Invoice = () => {
               </div>
             </div>
 
+            <div className="form-group-inline">
+              <div>
+                <label>GST Amount</label>
+                <input
+                  type="number"
+                  value={form.gstAmount.toFixed(2)}
+                  readOnly
+                />
+              </div>
+              <div>
+                <label>Total Amount</label>
+                <input
+                  type="number"
+                  value={form.totalAmount.toFixed(2)}
+                  readOnly
+                />
+              </div>
+            </div>
+
             <div className="form-group">
               <label>Narration</label>
               <textarea
@@ -232,34 +279,36 @@ const Invoice = () => {
         </div>
 
         <div className="card">
-          <h3>Recent Invoices</h3>
+          <h3>Party Summary</h3>
           <table className="table">
             <thead>
               <tr>
-                <th>No</th>
-                <th>Type</th>
                 <th>Party</th>
-                <th>Date</th>
-                <th>Total</th>
+                <th>Total Amount</th>
                 <th>Balance</th>
-                <th>Status</th>
+                <th>View</th>
               </tr>
             </thead>
             <tbody>
-              {invoices.map((inv) => (
-                <tr key={inv.id}>
-                  <td>{inv.invoiceNumber}</td>
-                  <td>{inv.type}</td>
-                  <td>{inv.partyName}</td>
-                  <td>{inv.date}</td>
-                  <td>{Number(inv.totalAmount).toFixed(2)}</td>
-                  <td>{Number(inv.balanceAmount).toFixed(2)}</td>
-                  <td>{inv.status}</td>
+              {partySummary.map((row) => (
+                <tr key={row.partyName}>
+                  <td>{row.partyName}</td>
+                  <td>{Number(row.totalAmount).toFixed(2)}</td>
+                  <td>{Number(row.balanceAmount).toFixed(2)}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => openPartyTransactionsFor(row.partyName)}
+                    >
+                      View transactions
+                    </button>
+                  </td>
                 </tr>
               ))}
-              {invoices.length === 0 && (
+              {partySummary.length === 0 && (
                 <tr>
-                  <td colSpan="7">No invoices yet.</td>
+                  <td colSpan="4">No invoices yet.</td>
                 </tr>
               )}
             </tbody>
@@ -272,7 +321,7 @@ const Invoice = () => {
         <div className="modal-backdrop">
           <div className="modal">
             <div className="modal-header">
-              <h4>Invoices for {form.partyName}</h4>
+              <h4>Invoices for {selectedParty}</h4>
               <button type="button" onClick={closePartyModal}>
                 X
               </button>
@@ -306,6 +355,14 @@ const Invoice = () => {
                         <td>{inv.status}</td>
                       </tr>
                     ))}
+                    <tr>
+                      <td colSpan="3">
+                        <strong>Totals</strong>
+                      </td>
+                      <td>{totalBase.toFixed(2)}</td>
+                      <td>{totalTotal.toFixed(2)}</td>
+                      <td></td>
+                    </tr>
                   </tbody>
                 </table>
               )}

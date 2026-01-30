@@ -177,7 +177,7 @@ const Payment = () => {
             </div>
 
             <div className="form-group">
-              <label>Mode</label>
+              <label>Mode <span className="required-star">*</span></label>
               <select name="mode" value={form.mode} onChange={handleChange}>
                 <option value="BANK_TRANSFER">Bank Transfer</option>
                 <option value="CHEQUE">Cheque</option>

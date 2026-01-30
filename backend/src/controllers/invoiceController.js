@@ -1,5 +1,7 @@
+// controllers/invoiceController.js
 const db = require('../config/db');
 const { Invoice, Ledger } = db;
+const { fn, col } = db.sequelize;
 
 // helper: calculate GST/TDS and totals
 const computeInvoiceAmounts = ({ baseAmount, gstRate, tdsRate }) => {
@@ -168,28 +170,53 @@ exports.createInvoice = async (req, res, next) => {
       tdsRate
     });
 
-    const invoiceNumber = await generateInvoiceNumber();
+    let invoice;
+    let lastError;
 
-    const invoice = await Invoice.create({
-      invoiceNumber,
-      type,
-      partyName,
-      partyGSTIN,
-      date,
-      dueDate,
-      baseAmount,
-      gstRate,
-      gstAmount,
-      tdsRate,
-      tdsAmount,
-      totalAmount,
-      balanceAmount: totalAmount,
-      status: 'POSTED',
-      createdBy: req.user.id,
-      costCenterId,
-      profitCenterId,
-      narration
-    }, { transaction: t });
+    // Try up to 2 times to avoid rare duplicate invoiceNumber under concurrency
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const invoiceNumber = await generateInvoiceNumber();
+      try {
+        invoice = await Invoice.create({
+          invoiceNumber,
+          type,
+          partyName,
+          partyGSTIN,
+          date,
+          dueDate,
+          baseAmount,
+          gstRate,
+          gstAmount,
+          tdsRate,
+          tdsAmount,
+          totalAmount,
+          balanceAmount: totalAmount,
+          status: 'POSTED',
+          createdBy: req.user.id,
+          costCenterId,
+          profitCenterId,
+          narration
+        }, { transaction: t });
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (
+          err.name === 'SequelizeUniqueConstraintError' &&
+          err.fields &&
+          err.fields.invoiceNumber &&
+          attempt === 0
+        ) {
+          // retry once with next number
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!invoice && lastError) {
+      throw lastError;
+    }
 
     await postInvoiceLedger(invoice, t);
 
@@ -222,7 +249,7 @@ exports.getInvoice = async (req, res, next) => {
   }
 };
 
-// NEW: list all invoices for a given party name
+// list all invoices for a given party name
 exports.listInvoicesByParty = async (req, res, next) => {
   try {
     const { partyName } = req.params;
@@ -233,6 +260,24 @@ exports.listInvoicesByParty = async (req, res, next) => {
     });
 
     res.json(invoices);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Summary: one row per party with summed totals
+exports.listInvoiceSummaryByParty = async (req, res, next) => {
+  try {
+    const rows = await Invoice.findAll({
+      attributes: [
+        'partyName',
+        [fn('SUM', col('totalAmount')), 'totalAmount'],
+        [fn('SUM', col('balanceAmount')), 'balanceAmount'],
+      ],
+      group: ['partyName'],
+      order: [['partyName', 'ASC']],
+    });
+    res.json(rows);
   } catch (err) {
     next(err);
   }
