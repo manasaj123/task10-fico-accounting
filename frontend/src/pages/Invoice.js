@@ -15,7 +15,7 @@ const Invoice = () => {
     tdsRate: '0',
     narration: '',
     gstAmount: 0,
-    totalAmount: 0
+    totalAmount: 0,
   });
 
   const [partySummary, setPartySummary] = useState([]);
@@ -47,14 +47,14 @@ const Invoice = () => {
       const gstR = Number(updated.gstRate) || 0;
       const tdsR = Number(updated.tdsRate) || 0;
 
-      const gstAmount = base * gstR / 100;
-      const tdsAmount = base * tdsR / 100;
+      const gstAmount = (base * gstR) / 100;
+      const tdsAmount = (base * tdsR) / 100;
       const totalAmount = base + gstAmount - tdsAmount;
 
       return {
         ...updated,
         gstAmount,
-        totalAmount
+        totalAmount,
       };
     });
   };
@@ -73,7 +73,7 @@ const Invoice = () => {
         baseAmount: Number(form.baseAmount),
         gstRate: Number(form.gstRate),
         tdsRate: Number(form.tdsRate) || 0,
-        narration: form.narration
+        narration: form.narration,
       };
       const res = await api.post('/invoices', payload);
 
@@ -85,7 +85,7 @@ const Invoice = () => {
         baseAmount: '',
         narration: '',
         gstAmount: 0,
-        totalAmount: 0
+        totalAmount: 0,
       }));
       loadPartySummary();
     } catch (err) {
@@ -224,25 +224,30 @@ const Invoice = () => {
             </div>
 
             <div className="form-group-inline">
-              <div>
-                <label>GST %</label>
-                <input
-                  type="number"
-                  name="gstRate"
-                  value={form.gstRate}
-                  onChange={handleChange}
-                />
-              </div>
-              <div>
-                <label>TDS %</label>
-                <input
-                  type="number"
-                  name="tdsRate"
-                  value={form.tdsRate}
-                  onChange={handleChange}
-                />
-              </div>
-            </div>
+  <div>
+    <label>GST %</label>
+    <select
+      name="gstRate"
+      value={form.gstRate}
+      onChange={handleChange}
+      required
+    >
+      <option value="5">5%</option>
+      <option value="18">18%</option>
+      <option value="40">40%</option>
+    </select>
+  </div>
+  <div>
+    <label>TDS %</label>
+    <input
+      type="number"
+      name="tdsRate"
+      value={form.tdsRate}
+      onChange={handleChange}
+    />
+  </div>
+</div>
+
 
             <div className="form-group-inline">
               <div>
@@ -333,38 +338,40 @@ const Invoice = () => {
                 <div>No invoices found for this party.</div>
               )}
               {!partyLoading && !partyError && partyInvoices.length > 0 && (
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>No</th>
-                      <th>Date</th>
-                      <th>Type</th>
-                      <th>Base</th>
-                      <th>Total</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {partyInvoices.map((inv) => (
-                      <tr key={inv.id}>
-                        <td>{inv.invoiceNumber}</td>
-                        <td>{inv.date}</td>
-                        <td>{inv.type}</td>
-                        <td>{Number(inv.baseAmount).toFixed(2)}</td>
-                        <td>{Number(inv.totalAmount).toFixed(2)}</td>
-                        <td>{inv.status}</td>
+                <div className="modal-table-wrapper">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>No</th>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Base</th>
+                        <th>Total</th>
+                        <th>Status</th>
                       </tr>
-                    ))}
-                    <tr>
-                      <td colSpan="3">
-                        <strong>Totals</strong>
-                      </td>
-                      <td>{totalBase.toFixed(2)}</td>
-                      <td>{totalTotal.toFixed(2)}</td>
-                      <td></td>
-                    </tr>
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {partyInvoices.map((inv) => (
+                        <tr key={inv.id}>
+                          <td>{inv.invoiceNumber}</td>
+                          <td>{inv.date}</td>
+                          <td>{inv.type}</td>
+                          <td>{Number(inv.baseAmount).toFixed(2)}</td>
+                          <td>{Number(inv.totalAmount).toFixed(2)}</td>
+                          <td>{inv.status}</td>
+                        </tr>
+                      ))}
+                      <tr>
+                        <td colSpan="3">
+                          <strong>Totals</strong>
+                        </td>
+                        <td>{totalBase.toFixed(2)}</td>
+                        <td>{totalTotal.toFixed(2)}</td>
+                        <td></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
             <div className="modal-footer">

@@ -18,7 +18,9 @@ const Payment = () => {
     remarks: ''
   });
   const [error, setError] = useState('');
+  const [typeFilter, setTypeFilter] = useState('ALL');
 
+  // ---- load data ----
   const loadData = async () => {
     const [invRes, payRes] = await Promise.all([
       api.get('/invoices'),
@@ -32,27 +34,62 @@ const Payment = () => {
     loadData().catch(console.error);
   }, []);
 
+  // ---- small helper to auto-generate reference number ----
+  const generateReferenceNumber = () => {
+    // simple pattern: REF-YYYYMMDD-HHMMSS-random
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const y = now.getFullYear();
+    const m = pad(now.getMonth() + 1);
+    const d = pad(now.getDate());
+    const hh = pad(now.getHours());
+    const mm = pad(now.getMinutes());
+    const ss = pad(now.getSeconds());
+    const rand = Math.floor(Math.random() * 900) + 100; // 3-digit
+    return `REF-${y}${m}${d}-${hh}${mm}${ss}-${rand}`;
+  };
+
   const handleChange = (e) => {
     const { name, value } = e.target;
 
-    // When invoice changes, auto-set Type based on invoice.type
+    // When invoice changes, auto-set Type and Amount based on invoice
     if (name === 'invoiceId') {
       const inv = invoices.find((i) => i.id === Number(value));
 
       if (inv) {
         const nextType = inv.type === 'AP' ? 'PAYMENT' : 'RECEIPT';
+        const balance = Number(inv.balanceAmount) || 0;
+
         setForm((f) => ({
           ...f,
           invoiceId: value,
-          type: nextType,
+          // do NOT override user-selected CREDIT/DEBIT if already chosen
+          type:
+            f.type === 'CREDIT_NOTE' || f.type === 'DEBIT_NOTE'
+              ? f.type
+              : nextType,
+          // auto-fill amount as full balance
+          amount: balance.toFixed(2),
+          // auto-generate reference if empty
+          referenceNumber: f.referenceNumber || generateReferenceNumber()
         }));
       } else {
         setForm((f) => ({
           ...f,
           invoiceId: '',
           type: 'RECEIPT',
+          amount: ''
         }));
       }
+      return;
+    }
+
+    // When user clears referenceNumber, generate one
+    if (name === 'referenceNumber' && !value) {
+      setForm((f) => ({
+        ...f,
+        referenceNumber: generateReferenceNumber()
+      }));
       return;
     }
 
@@ -74,23 +111,36 @@ const Payment = () => {
     }
 
     const balance = Number(selectedInvoice.balanceAmount) || 0;
-    if (amount > balance) {
+    // For normal payments/receipts, do not allow more than balance
+    if (
+      amount > balance &&
+      form.type !== 'CREDIT_NOTE' &&
+      form.type !== 'DEBIT_NOTE'
+    ) {
       setError('Payment exceeds invoice balance');
+      return;
+    }
+
+    if (amount <= 0) {
+      setError('Amount must be greater than 0');
       return;
     }
 
     try {
       const payload = {
         // paymentNumber is generated in backend
-        type: form.type,
+        type: form.type, // includes RECEIPT, PAYMENT, CREDIT_NOTE, DEBIT_NOTE
         invoiceId: Number(form.invoiceId),
         date: form.date,
         mode: form.mode,
         bankAccountCode: form.bankAccountCode,
         amount,
         tdsAmount: Number(form.tdsAmount) || 0,
-        referenceNumber: form.referenceNumber,
-        remarks: form.remarks,
+        referenceNumber:
+          form.referenceNumber && form.referenceNumber.trim()
+            ? form.referenceNumber.trim()
+            : generateReferenceNumber(),
+        remarks: form.remarks
       };
 
       const res = await api.post('/payments', payload);
@@ -102,12 +152,24 @@ const Payment = () => {
         amount: '',
         tdsAmount: '',
         referenceNumber: '',
-        remarks: '',
+        remarks: ''
       }));
       loadData();
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to create payment');
     }
+  };
+
+  const filteredPayments = payments.filter((p) =>
+    typeFilter === 'ALL' ? true : p.type === typeFilter
+  );
+
+  const renderTypeText = (t) => {
+    if (t === 'CREDIT_NOTE') return 'Credit Note';
+    if (t === 'DEBIT_NOTE') return 'Debit Note';
+    if (t === 'RECEIPT') return 'Receipt';
+    if (t === 'PAYMENT') return 'Payment';
+    return t;
   };
 
   return (
@@ -146,12 +208,13 @@ const Payment = () => {
                 name="paymentNumber"
                 value={form.paymentNumber}
                 readOnly
-                placeholder="Will be generated from invoice"
+                placeholder="Will be generated from backend"
               />
             </div>
 
+            {/* Type including Credit/Debit Note */}
             <div className="form-group">
-              
+              <label>Type</label>
               <select
                 name="type"
                 value={form.type}
@@ -160,6 +223,8 @@ const Payment = () => {
               >
                 <option value="RECEIPT">Receipt (Customer)</option>
                 <option value="PAYMENT">Payment (Vendor)</option>
+                <option value="CREDIT_NOTE">Credit Note</option>
+                <option value="DEBIT_NOTE">Debit Note</option>
               </select>
             </div>
 
@@ -177,7 +242,9 @@ const Payment = () => {
             </div>
 
             <div className="form-group">
-              <label>Mode <span className="required-star">*</span></label>
+              <label>
+                Mode <span className="required-star">*</span>
+              </label>
               <select name="mode" value={form.mode} onChange={handleChange}>
                 <option value="BANK_TRANSFER">Bank Transfer</option>
                 <option value="CHEQUE">Cheque</option>
@@ -225,6 +292,7 @@ const Payment = () => {
                 name="referenceNumber"
                 value={form.referenceNumber}
                 onChange={handleChange}
+                placeholder="Auto-generated if left blank"
               />
             </div>
 
@@ -244,7 +312,9 @@ const Payment = () => {
         </div>
 
         <div className="card">
-          <h3>Recent Payments</h3>
+          <h3>Recent Payments / Notes</h3>
+
+          
           <table className="table">
             <thead>
               <tr>
@@ -257,19 +327,19 @@ const Payment = () => {
               </tr>
             </thead>
             <tbody>
-              {payments.map((p) => (
+              {filteredPayments.map((p) => (
                 <tr key={p.id}>
                   <td>{p.paymentNumber}</td>
-                  <td>{p.type}</td>
+                  <td>{renderTypeText(p.type)}</td>
                   <td>{p.invoiceId}</td>
                   <td>{p.date}</td>
                   <td>{Number(p.amount).toFixed(2)}</td>
                   <td>{p.reconciled ? 'Yes' : 'No'}</td>
                 </tr>
               ))}
-              {payments.length === 0 && (
+              {filteredPayments.length === 0 && (
                 <tr>
-                  <td colSpan="6">No payments yet.</td>
+                  <td colSpan="6">No records for this filter.</td>
                 </tr>
               )}
             </tbody>

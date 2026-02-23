@@ -1,6 +1,26 @@
 const db = require('../config/db');
 const { Payment, Invoice, Ledger } = db;
 
+// -------- helper: generate next payment number --------
+const generatePaymentNumber = async () => {
+  const last = await Payment.findOne({
+    order: [['id', 'DESC']]
+  });
+
+  let nextSeq = 1;
+  if (last && last.paymentNumber) {
+    const parts = String(last.paymentNumber).split('-');
+    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(lastSeq)) {
+      nextSeq = lastSeq + 1;
+    }
+  }
+
+  const seqStr = String(nextSeq).padStart(3, '0'); // PAY-001, PAY-002...
+  return `DB4-PAY-${seqStr}`;
+};
+
+// -------- helper: post ledger --------
 const postPaymentLedger = async (payment, invoice, transaction) => {
   const {
     id,
@@ -23,11 +43,11 @@ const postPaymentLedger = async (payment, invoice, transaction) => {
   const TDS_PAYABLE = '210002';
 
   const amt = Number(amount);
-  const tds = Number(tdsAmount);
+  const tds = Number(tdsAmount) || 0;
 
   const common = {
     date,
-    referenceType: 'PAYMENT',
+    referenceType: type, // use actual type
     referenceNumber: paymentNumber,
     paymentId: id,
     invoiceId: invoice.id,
@@ -40,88 +60,76 @@ const postPaymentLedger = async (payment, invoice, transaction) => {
     // Debit Bank/Cash: amt
     // Credit AR: amt + tds
     // Debit TDS Receivable: tds
-    await Ledger.bulkCreate([
-      {
-        ...common,
-        accountCode: BANK_OR_CASH,
-        description: `Receipt for invoice ${invoice.invoiceNumber}`,
-        debit: amt,
-        credit: 0
-      },
-      {
-        ...common,
-        accountCode: AR_ACCOUNT,
-        description: `Clear AR for invoice ${invoice.invoiceNumber}`,
-        debit: 0,
-        credit: amt + tds
-      },
-      tds > 0
-        ? {
-            ...common,
-            accountCode: TDS_RECEIVABLE,
-            description: `TDS receivable on payment ${paymentNumber}`,
-            debit: tds,
-            credit: 0
-          }
-        : null
-    ].filter(Boolean), { transaction });
+    await Ledger.bulkCreate(
+      [
+        {
+          ...common,
+          accountCode: BANK_OR_CASH,
+          description: `Receipt for invoice ${invoice.invoiceNumber}`,
+          debit: amt,
+          credit: 0
+        },
+        {
+          ...common,
+          accountCode: AR_ACCOUNT,
+          description: `Clear AR for invoice ${invoice.invoiceNumber}`,
+          debit: 0,
+          credit: amt + tds
+        },
+        tds > 0
+          ? {
+              ...common,
+              accountCode: TDS_RECEIVABLE,
+              description: `TDS receivable on payment ${paymentNumber}`,
+              debit: tds,
+              credit: 0
+            }
+          : null
+      ].filter(Boolean),
+      { transaction }
+    );
   } else {
     // Vendor payment:
     // Debit AP: amt + tds
     // Credit Bank/Cash: amt
     // Credit TDS Payable: tds
-    await Ledger.bulkCreate([
-      {
-        ...common,
-        accountCode: AP_ACCOUNT,
-        description: `Clear AP for invoice ${invoice.invoiceNumber}`,
-        debit: amt + tds,
-        credit: 0
-      },
-      {
-        ...common,
-        accountCode: BANK_OR_CASH,
-        description: `Payment for invoice ${invoice.invoiceNumber}`,
-        debit: 0,
-        credit: amt
-      },
-      tds > 0
-        ? {
-            ...common,
-            accountCode: TDS_PAYABLE,
-            description: `TDS payable on payment ${paymentNumber}`,
-            debit: 0,
-            credit: tds
-          }
-        : null
-    ].filter(Boolean), { transaction });
+    await Ledger.bulkCreate(
+      [
+        {
+          ...common,
+          accountCode: AP_ACCOUNT,
+          description: `Clear AP for invoice ${invoice.invoiceNumber}`,
+          debit: amt + tds,
+          credit: 0
+        },
+        {
+          ...common,
+          accountCode: BANK_OR_CASH,
+          description: `Payment for invoice ${invoice.invoiceNumber}`,
+          debit: 0,
+          credit: amt
+        },
+        tds > 0
+          ? {
+              ...common,
+              accountCode: TDS_PAYABLE,
+              description: `TDS payable on payment ${paymentNumber}`,
+              debit: 0,
+              credit: tds
+            }
+          : null
+      ].filter(Boolean),
+      { transaction }
+    );
   }
 };
 
-// helper: generate payment number, e.g. DB4-PAY-001, DB4-PAY-002 ...
-const generatePaymentNumber = async () => {
-  const last = await Payment.findOne({
-    order: [['id', 'DESC']],
-  });
-
-  let nextSeq = 1;
-  if (last && last.paymentNumber) {
-    const parts = String(last.paymentNumber).split('-');
-    const lastSeq = parseInt(parts[parts.length - 1], 10);
-    if (!isNaN(lastSeq)) {
-      nextSeq = lastSeq + 1;
-    }
-  }
-
-  const seqStr = String(nextSeq).padStart(3, '0');
-  return `DB4-PAY-${seqStr}`;
-};
-
+// -------- controller: createPayment --------
 exports.createPayment = async (req, res, next) => {
   const t = await db.sequelize.transaction();
   try {
+    // IMPORTANT: do NOT destructure paymentNumber from body
     const {
-      // paymentNumber,  // ❌ ignore from body
       type,
       invoiceId,
       date,
@@ -147,25 +155,34 @@ exports.createPayment = async (req, res, next) => {
 
     if (payAmt > Number(invoice.balanceAmount)) {
       await t.rollback();
-      return res.status(400).json({ message: 'Payment exceeds invoice balance' });
+      return res
+        .status(400)
+        .json({ message: 'Payment exceeds invoice balance' });
     }
 
-    // auto-generate payment number here
-    const paymentNumber = await generatePaymentNumber();
+    // generate payment number on backend
+    const newPaymentNumber = await generatePaymentNumber();
 
-    const payment = await Payment.create({
-      paymentNumber,
-      type,
-      invoiceId,
-      date,
-      mode,
-      bankAccountCode,
-      amount: payAmt,
-      tdsAmount: tdsAmount || 0,
-      referenceNumber,
-      remarks,
-      reconciled: true,
-    }, { transaction: t });
+    const refNo =
+      referenceNumber && referenceNumber.trim()
+        ? referenceNumber.trim()
+        : newPaymentNumber;
+
+    const payment = await Payment.create(
+      {
+        paymentNumber: newPaymentNumber,
+        type,
+        invoiceId,
+        date,
+        mode,
+        bankAccountCode,
+        amount: payAmt,
+        tdsAmount: tdsAmount || 0,
+        referenceNumber: refNo,
+        remarks
+      },
+      { transaction: t }
+    );
 
     // Update invoice balance & status
     const newBalance = Number(invoice.balanceAmount) - payAmt;
@@ -187,12 +204,33 @@ exports.createPayment = async (req, res, next) => {
   }
 };
 
+// -------- controller: listPayments --------
 exports.listPayments = async (req, res, next) => {
   try {
     const payments = await Payment.findAll({
       order: [['date', 'DESC'], ['id', 'DESC']]
     });
     res.json(payments);
+  } catch (err) {
+    next(err);
+  }
+};
+
+
+// in paymentController.js
+exports.markReconciled = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const payment = await Payment.findByPk(id);
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    payment.reconciled = true;
+    await payment.save();
+
+    res.json(payment);
   } catch (err) {
     next(err);
   }
